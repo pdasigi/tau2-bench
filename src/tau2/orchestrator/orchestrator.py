@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from loguru import logger
+from litellm.exceptions import Timeout 
 
 from tau2.agent.base import AgentError, BaseAgent, is_valid_agent_history_message
 from tau2.agent.llm_agent import LLMSoloAgent
@@ -481,29 +482,34 @@ class Orchestrator:
         elif (
             self.from_role == Role.USER or self.from_role == Role.ENV
         ) and self.to_role == Role.AGENT:
-            agent_msg, self.agent_state = self.agent.generate_next_message(
-                self.message, self.agent_state
-            )
             try:
-                agent_msg.validate()
-            except ValueError as e:
-                logger.error(f"Agent generated invalid message: {e}")
-                self.done = True
-                self.termination_reason = TerminationReason.AGENT_ERROR
-            if self.agent.is_stop(agent_msg):
-                self.done = True
-                self.termination_reason = TerminationReason.AGENT_STOP
-            self.trajectory.append(agent_msg)
-            self.message = agent_msg
-            self.from_role = Role.AGENT
-            if agent_msg.is_tool_call():
-                self.to_role = Role.ENV
-            else:
-                self.to_role = Role.USER
-                # In solo mode, there is no user, so if the message is not a tool call and not a stop, then we end and report an agent error
-                if self.solo_mode and not self.agent.is_stop(agent_msg):
+                agent_msg, self.agent_state = self.agent.generate_next_message(
+                    self.message, self.agent_state
+                )
+                try:
+                    agent_msg.validate()
+                except ValueError as e:
+                    logger.error(f"Agent generated invalid message: {e}")
                     self.done = True
                     self.termination_reason = TerminationReason.AGENT_ERROR
+                if self.agent.is_stop(agent_msg):
+                    self.done = True
+                    self.termination_reason = TerminationReason.AGENT_STOP
+                self.trajectory.append(agent_msg)
+                self.message = agent_msg
+                self.from_role = Role.AGENT
+                if agent_msg.is_tool_call():
+                    self.to_role = Role.ENV
+                else:
+                    self.to_role = Role.USER
+                    # In solo mode, there is no user, so if the message is not a tool call and not a stop, then we end and report an agent error
+                    if self.solo_mode and not self.agent.is_stop(agent_msg):
+                        self.done = True
+                        self.termination_reason = TerminationReason.AGENT_ERROR
+            except Timeout as e:
+                logger.error(f"Agent timed out: {e}")
+                self.done = True
+                self.termination_reason = TerminationReason.AGENT_ERROR
         # AGENT/USER -> ENV
         elif self.from_role in [Role.AGENT, Role.USER] and self.to_role == Role.ENV:
             if not self.message.is_tool_call():
